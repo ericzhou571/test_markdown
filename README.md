@@ -1,121 +1,489 @@
-# test_markdown
+# Nova RAG 服务架构梳理
+
+## 项目概述
+
+Nova RAG 是一个基于检索增强生成技术的问答服务，主要用于处理用户查询并提供准确的回答。该服务利用向量检索和大语言模型，能够从知识库中检索相关信息并生成高质量的回答。
+
+## 核心模块关系
+
+通过对 `rag_service.py` 的代码分析，我们可以梳理出以下与服务运行相关的核心模块及其关系：
+
+### 1. 入口服务模块
+
+- **`coagent/entrypoints/v2/rag_service.py`**: 主服务入口，提供 FastAPI 接口和核心工作流逻辑
+
+### 2. 检索引擎模块
+
+- **`coagent/retrievers/llama_index_solution/`**: 提供向量检索和文档处理的核心功能
+  - `llamaindex_init.py`: 初始化索引、向量存储和嵌入模型
+  - `nova_rag_core.py`: 提供搜索、添加、更新、删除等核心功能
+  - `nova_node_postprocessing.py`: 处理文档节点和后处理逻辑
+  - `env_utils.py`: 环境变量工具
+
+### 3. 配置模块
+
+- **`coagent/configs/v2/`**: 存储服务配置
+  - `rag_server_config.yaml`: 主要配置文件，包含 OpenAI、日志、向量存储等配置
+  - `law_patch.json`: 法律/国家标准问答增强模式的配置
+
+### 4. 工具模块
+
+- **`coagent/entrypoints/v2/feishu_wiki_cleaned_20241120.json`**: 关键词提取和解释的数据源
+
+## 模块依赖关系
+
+```mermaid
+graph TD
+    classDef mainService fill:#ff7700,stroke:#333,stroke-width:2px,color:white,font-weight:bold
+    classDef coreModule fill:#4CAF50,stroke:#333,stroke-width:1px
+    classDef configModule fill:#2196F3,stroke:#333,stroke-width:1px
+    classDef externalSystem fill:#9E9E9E,stroke:#333,stroke-width:1px
+
+    %% 主服务
+    RAGService[rag_service.py]:::mainService
+
+    %% 核心模块
+    LlamaIndexSolution[llama_index_solution]:::coreModule
+    LlamaInit[llamaindex_init.py]:::coreModule
+    RAGCore[nova_rag_core.py]:::coreModule
+    NodeProcessing[nova_node_postprocessing.py]:::coreModule
+    EnvUtils[env_utils.py]:::coreModule
+    
+    %% 配置模块
+    ConfigFiles[配置文件]:::configModule
+    RAGConfig[rag_server_config.yaml]:::configModule
+    LawPatch[law_patch.json]:::configModule
+    FeishuWiki[feishu_wiki_cleaned.json]:::configModule
+    
+    %% 外部系统
+    OpenAI[OpenAI API]:::externalSystem
+    ClickHouse[ClickHouse]:::externalSystem
+    MemoryService[Memory Service]:::externalSystem
+    QdrantDB[Qdrant Vector DB]:::externalSystem
+    
+    %% 依赖关系
+    RAGService -->|初始化| LlamaIndexSolution
+    RAGService -->|读取配置| ConfigFiles
+    RAGService -->|日志存储| ClickHouse
+    RAGService -->|用户记忆| MemoryService
+    RAGService -->|文本生成| OpenAI
+    RAGService -->|关键词提取| FeishuWiki
+    RAGService -->|法律问答| LawPatch
+    
+    LlamaIndexSolution --> LlamaInit
+    LlamaIndexSolution --> RAGCore
+    LlamaIndexSolution --> NodeProcessing
+    LlamaIndexSolution --> EnvUtils
+    
+    ConfigFiles --> RAGConfig
+    ConfigFiles --> LawPatch
+    
+    LlamaInit -->|连接| QdrantDB
+    RAGCore -->|使用| QdrantDB
+```
+
+## 服务功能与 API 端点
+
+RAG 服务提供以下主要 API 端点：
+
+1. **`/conversation`**: 主要工作流端点，处理对话请求
+2. **`/add`**: 添加数据到索引
+3. **`/search_by_doc_id`**: 通过文档 ID 搜索节点
+4. **`/search_by_node_id`**: 通过节点 ID 搜索节点
+5. **`/search_by_label`**: 通过标签搜索节点
+6. **`/update`**: 更新索引中的数据
+7. **`/query_search`**: 执行查询搜索
+8. **`/citation_answer`**: 生成带引用的回答
+9. **`/delete`**: 删除索引中的数据
+
+## 工作流程概述
+
+1. **请求接收**：接收包含对话历史和用户 ID 的请求
+2. **意图理解**：使用 LLM 理解用户意图并生成搜索查询
+3. **知识检索**：从向量存储中检索相关知识
+4. **知识验证**：判断检索到的知识是否足够回答用户问题
+5. **回答生成**：
+   - 如果知识足够：生成带引用的回答
+   - 如果知识不足：使用对话历史直接生成回答
+6. **特殊模式处理**：
+   - 国家标准模式：针对汽车行业标准的特殊处理
+   - 自动路由模式：在知识不足时尝试超级用户模式
+7. **记忆添加**：将当前对话添加到用户记忆中
+8. **返回结果**：返回生成的回答和相关元数据
+
+## 配置说明
+
+服务配置主要通过 `rag_server_config.yaml` 文件提供，包括：
+
+- OpenAI API 配置
+- 日志配置
+- 向量存储配置
+- 对话历史长度配置
+- 代理配置
+
+## 启动服务
+
+服务通过以下命令启动：
+
+```bash
+python coagent/entrypoints/v2/rag_service.py --config coagent/configs/v2/rag_server_config.yaml
+```
+
+## 注意事项
+
+1. 服务依赖 Qdrant 向量数据库，需确保其正常运行
+2. 需要配置正确的 OpenAI API 访问信息
+3. 内存服务需要单独部署和配置
+4. 日志存储使用 ClickHouse，需确保连接正常
 
 
-整零新“革命”，中兴通讯开启与OEM的“双向奔赴”
-=========================
+# Nova RAG 服务代码结构与工作流程分析
 
-2024-03-11 17:17·[盖世汽车Gasgoo](/c/user/token/MS4wLjABAAAA8Oy_LFDD4ou-WquufMlXdsDPf1WD1JJnwFuUw-6nXPs/?source=tuwen_detail)中国主机厂的生意，到底谁来做更好？
+## 代码结构概述
 
-现如今，这个答案或许是所有中国零部件供应商们。
+`rag_service.py` 是一个基于 FastAPI 的 RAG (Retrieval-Augmented Generation) 服务，主要用于处理对话请求，通过检索相关知识并结合 LLM 生成回答。该服务具有以下主要组件：
 
-3月8日，上汽大通旗下轻客车型新途V80在国内量产上市。据悉，该款车型搭载了国内唯一一款实现“芯片+模组”全栈自研、完全自主知识产权的国产4G车规级通信模组ZM8201，此模组还将在上汽集团多个车型实现量产上车。﻿‌‌‌​​‌​​⁠‌​‌‌‌​​​⁠‌​​​‌​‌​⁠‌‌‌​​‌‌​⁠‌​‌‌​‌​‌⁠‌​‌‌​‌‌‌⁠‌‌‌​​‌‌‌⁠‌​​‌‌​‌‌⁠‌​​‌​‌‌​⁠‌‌‌​​‌​​⁠‌​‌‌‌​​​⁠‌​​‌​‌‌​⁠‌‌‌​​‌‌‌⁠‌​‌‌‌‌​‌⁠‌​​‌​​​‌⁠‌‌‌​​‌‌‌⁠‌​‌‌‌​‌‌⁠‌​​‌‌‌​​⁠‌‌‌​​‌‌​⁠‌​​​‌​‌​⁠‌​​​​​​​⁠‌‌‌​​‌‌​⁠‌​​‌‌‌​​⁠‌​‌​‌‌‌‌⁠‌‌‌​​‌‌​⁠‌​​‌‌‌​​⁠‌​​​‌​​‌⁠‌‌‌​‌​​‌⁠‌​​‌‌​​‌⁠‌​​‌​​​​⁠‌‌‌​​‌​‌⁠‌​​​​‌​‌⁠‌​‌​‌‌​​⁠‌‌‌​​‌​‌⁠‌​​​‌‌‌‌⁠‌​‌‌‌​​​⁠‌‌‌​​‌‌‌⁠‌​​​‌​​‌⁠‌​​​‌​​​⁠‌‌‌​​‌‌​⁠‌​​‌‌‌​‌⁠‌​​​​​‌‌⁠‌‌‌​​‌‌​⁠‌​​​‌​​‌⁠‌​​​​​​​⁠‌‌‌​​‌‌​⁠‌​​‌‌‌​​⁠‌​​​‌​​‌⁠‌‌‌​‌‌‌‌⁠‌​‌‌‌‌​​⁠‌​​​‌‌​​⁠‌‌‌​​‌‌​⁠‌​​‌‌‌​​⁠‌​‌​‌​‌​⁠‌‌‌​​‌‌‌⁠‌​‌‌‌​‌‌⁠‌​​​‌‌‌‌⁠‌‌‌​​‌​‌⁠‌​​​​‌​‌⁠‌​​​​​​‌⁠‌‌‌​‌​​​⁠‌​‌​‌‌‌​⁠‌​‌‌‌​​​⁠‌‌‌​​‌‌‌⁠‌​‌​​‌‌​⁠‌​​​​​​‌⁠‌‌‌​​‌‌​⁠‌​‌​‌‌​‌⁠‌​‌​​​‌​⁠‌‌‌​‌​​​⁠‌​‌‌‌‌​‌⁠‌​‌​‌‌​​⁠‌‌‌​‌​​​⁠‌​‌‌‌‌​‌⁠‌​‌‌‌‌​‌﻿
+### 1. 核心组件
 
-值得注意的是，此次上汽大通新途V80上搭载的4G车规级通信模组ZM8201，便是由中兴通讯提供的。
+- **FastAPI 应用**: 提供 HTTP API 接口
+- **日志系统**: 包含控制台、文件和 ClickHouse 异步日志处理
+- **向量存储**: 使用 LlamaIndex 进行文档索引和检索
+- **OpenAI 客户端**: 用于生成文本和理解用户意图
+- **内存服务**: 用于存储和检索用户历史对话
+- **关键词提取器**: 从用户输入中提取关键词并提供解释
 
-  
+### 2. 主要 API 端点
+
+- `/conversation`: 主要工作流端点，处理对话请求
+- `/add`: 添加数据到索引
+- `/search_by_doc_id`: 通过文档 ID 搜索节点
+- `/search_by_node_id`: 通过节点 ID 搜索节点
+- `/search_by_label`: 通过标签搜索节点
+- `/update`: 更新索引中的数据
+- `/query_search`: 执行查询搜索
+- `/citation_answer`: 生成带引用的回答
+- `/delete`: 删除索引中的数据
+
+### 3. 数据模型
+
+使用 Pydantic 模型定义请求和响应结构，包括：
+- `ConversationMessage`: 对话消息
+- `WorkflowRequest`: 工作流请求
+- `AddRequest`: 添加数据请求
+- `SearchByDocIDRequest`: 通过文档 ID 搜索请求
+- 等等
+
+### 4. 辅助功能
+
+- 法律/国家标准问答增强模式
+- 复杂查询理解和分解
+- 自动路由功能
+- 记忆搜索和添加
+- 维基搜索
+
+## 外部依赖关系
+
+该服务依赖于多个外部组件：
+
+1. **LlamaIndex**: 用于文档索引和检索
+   - 通过 `llama_index_init` 初始化索引和向量存储
+   - 使用 `nova_rag_core` 中的函数进行搜索和操作
+
+2. **OpenAI API**: 用于生成文本和理解用户意图
+   - 使用 `AsyncOpenAI` 客户端进行异步调用
+   - 支持聊天完成和工具调用
+
+3. **内存服务**: 用于存储和检索用户历史对话
+   - 通过 HTTP 请求与内存服务交互
+   - 提供 `/search` 和 `/add` 端点
+
+4. **ClickHouse**: 用于日志存储
+   - 使用 `AsyncClickHouseHandler` 异步处理日志
+   - 批量写入日志到 ClickHouse 数据库
+
+5. **配置文件**: 通过 YAML 文件提供配置
+   - 包含 OpenAI API、内存服务、日志等配置
+
+## 工作流程
+
+### 主要工作流程 (`/conversation` 端点)
+
+1. **请求接收与预处理**:
+   - 接收包含对话历史、工具和用户 ID 的请求
+   - 设置请求 ID 和日志上下文
+   - 提取最新的用户输入和对话历史
+
+2. **意图理解**:
+   - 并行获取用户记忆和维基解释
+   - 使用 LLM 生成搜索查询，理解用户意图
+   - 可选择进行复杂查询分解，生成多个子查询
+
+3. **知识检索**:
+   - 使用意图或子查询从索引中检索相关知识
+   - 对检索结果进行格式化和后处理
+
+4. **知识验证**:
+   - 使用 LLM 判断检索到的知识是否足够回答用户问题
+   - 如果不足够且启用了自动路由，尝试使用超级用户模式重新检索
+
+5. **特殊模式处理**:
+   - 如果是国家标准模式，进行特殊的法规查询和回答生成
+   - 使用 `article_level_qa_async` 生成基于法规的回答
+
+6. **回答生成**:
+   - 如果知识不足，使用对话历史和系统提示直接生成回答
+   - 如果知识足够，生成带引用的回答
+   - 处理工具调用和普通回复
+
+7. **记忆添加**:
+   - 将当前对话添加到用户记忆中
+
+8. **返回结果**:
+   - 返回生成的回答和相关元数据
+
+### 日志处理流程
+
+1. **日志初始化**:
+   - 设置控制台、文件和 ClickHouse 日志处理器
+   - 配置日志格式和级别
+
+2. **异步日志处理**:
+   - 将日志条目添加到队列
+   - 后台线程批量处理队列中的日志
+   - 写入到 ClickHouse 数据库
+
+3. **日志关闭**:
+   - 在应用关闭时刷新剩余日志
+   - 关闭日志处理器
+
+### 应用生命周期管理
+
+1. **启动**:
+   - 初始化资源，包括日志系统
+   - 设置 ClickHouse 日志处理器
+
+2. **关闭**:
+   - 释放资源
+   - 关闭日志处理器
+
+## UML 时序图
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant FastAPI as FastAPI App
+    participant Workflow as Workflow Handler
+    participant Memory as Memory Service
+    participant Wiki as Keyword Extractor
+    participant LLM as OpenAI Client
+    participant Index as LlamaIndex
+    participant Logger as Logger System
+    
+    Client->>FastAPI: POST /conversation
+    activate FastAPI
+    
+    FastAPI->>Logger: 设置请求ID和日志上下文
+    FastAPI->>Workflow: 处理工作流请求
+    activate Workflow
+    
+    Workflow->>Logger: 记录请求信息
+    
+    par 并行获取上下文信息
+        Workflow->>Memory: 搜索用户记忆
+        Memory-->>Workflow: 返回相关记忆
+        
+        Workflow->>Wiki: 提取关键词
+        Wiki-->>Workflow: 返回关键词解释
+    end
+    
+    Workflow->>LLM: 发送意图理解提示
+    LLM-->>Workflow: 返回理解后的意图
+    
+    alt 复杂查询理解启用
+        Workflow->>LLM: 发送查询分解提示
+        LLM-->>Workflow: 返回子查询列表
+    end
+    
+    Workflow->>Index: 搜索相关信息
+    Index-->>Workflow: 返回检索结果
+    
+    Workflow->>LLM: 验证知识是否足够回答
+    LLM-->>Workflow: 返回验证结果
+    
+    alt 国家标准模式
+        alt 知识不足
+            Workflow->>LLM: 生成国家标准相关查询
+            LLM-->>Workflow: 返回分解后的查询
+            
+            Workflow->>Index: 重新搜索相关信息
+            Index-->>Workflow: 返回检索结果
+            
+            Workflow->>LLM: 执行文章级问答
+            LLM-->>Workflow: 返回基于法规的回答
+        end
+    end
+    
+    alt 自动路由启用且知识不足
+        Workflow->>Index: 使用超级用户模式搜索
+        Index-->>Workflow: 返回检索结果
+        
+        Workflow->>LLM: 再次验证知识
+        LLM-->>Workflow: 返回验证结果
+        
+        alt 知识足够
+            Workflow->>Index: 生成带引用的回答
+            Index-->>Workflow: 返回带引用的回答
+        end
+    end
+    
+    Workflow->>Memory: 添加当前对话到记忆
+    
+    alt 知识不足
+        Workflow->>LLM: 发送对话历史和系统提示
+        LLM-->>Workflow: 返回生成的回答
+    else 知识足够且需要引用
+        Workflow->>Index: 生成带引用的回答
+        Index-->>Workflow: 返回带引用的回答
+    end
+    
+    Workflow->>Logger: 记录最终结果
+    Workflow-->>FastAPI: 返回处理结果
+    deactivate Workflow
+    
+    FastAPI-->>Client: 返回响应
+    deactivate FastAPI
+    
+    note over Logger: 异步处理日志
+    Logger->>ClickHouse: 批量写入日志
+```
+
+这个时序图展示了 RAG 服务处理对话请求的完整流程，包括并行获取上下文信息、意图理解、知识检索、验证和回答生成等步骤，以及特殊模式和自动路由的处理逻辑。
 
 
-![](https://p3-sign.toutiaoimg.com/tos-cn-i-axegupay5k/e3feaae8b28a498bb8a7c782c992ec41~noop.image?_iz=58558&from=article.pc_detail&lk3s=953192f4&x-expires=1710771037&x-signature=kcqm8vi7REG%2F05ZElI6EWr1vFCA%3D)  
 
+# RAG Service 与 llama_index_solution 的依赖关系分析
 
-图为：搭载中兴4G通信模组的上汽大通MAXUS新途V80
+## RAG Service 与 llama_index_solution 的交互关系
 
-对于此次合作，上汽大通方面给予了中兴通讯极高的认可。上汽集团商用车技术中心副主任谢铭诗如此评价：“这个项目只用了短短6个月时间，比原定计划提前3个月就完成了芯片定点到量产装车。”
+RAG Service (`rag_service.py`) 是一个基于 FastAPI 的服务，它的核心功能依赖于 `llama_index_solution` 包提供的各种组件和功能。这种依赖关系主要体现在以下几个方面：
 
-这就意味着，中兴通讯在短时间内完成模组产品的零部件级、系统级和整车级测试验证的同时，还为主机厂的整车开发赢得更多窗口期。
+1. **索引初始化与管理**：
+   - RAG Service 使用 `llama_index_init` 函数初始化向量索引和存储
+   - 依赖 `QdrantVectorStore` 和 `VectorStoreIndex` 进行文档存储和检索
 
-中兴通讯移动互联行业终端总经理凌惠波告诉盖世汽车：“相对于有些乘用车项目上，上汽大通的商用车测试的条目和要求更多。”他还表示：“整个项目开发周期完全超出了客户的预期。”
+2. **文档处理与节点管理**：
+   - 使用 `nova_document_postprocessing` 处理文档并创建节点
+   - 通过 `add`、`update`、`delete_node_by_doc_id` 等函数管理索引中的文档
 
-换言之，“面面俱到”的产品力，叠加高效的量产和交付能力，或许是中兴通讯能够站在主机厂面前最大的底气。
+3. **查询与检索**：
+   - 使用 `query_search` 和 `query_list_search` 执行向量检索
+   - 通过 `search_node_by_doc_id`、`search_nodes_by_node_id` 等函数进行精确检索
 
-**当OEM执着于打开“黑盒”，谁的机会更多了？**
+4. **回答生成**：
+   - 使用 `citation_answer` 生成带引用的回答
+   - 依赖 `generate_markdown_response` 格式化回答
 
-机会留给有准备的人，产业机遇亦留给有准备的企业。
+5. **后处理与过滤**：
+   - 使用 `CustomizeNodePostprocessor` 进行节点重排序
+   - 通过 `generate_user_access_filter` 实现访问控制
 
-中兴通讯获得来自主机厂的定点项目绝非偶然，该公司与上汽大通的合作，也是现下新型“整零关系”的缩影。
+RAG Service 通过这些依赖关系，将用户请求转化为向量查询，检索相关知识，并生成回答，形成一个完整的检索增强生成系统。
 
-根据中兴通讯汽车电子智能网联副总经理黄颖恒的观察，汽车行业主机厂和零部件厂商的关系正逐渐从以往“OEM—Tier 1—Tier 2”的层级链式结构，向现下“OEM—多级供应商”的网状结构演变。
+## llama_index_solution 架构梳理
 
-事实确是如此。在传统“黑盒”交付模式下，车企无法对内部算法进行自主修改和调整，不利于算法的实时迭代升级，软硬件无法实现更高效的协同开发。现如今，随着消费者对整车功能定义要求提高，主机厂对于“白盒”的呼声也与日俱增。
+`llama_index_solution` 是一个基于 LlamaIndex 框架的定制化解决方案，主要包含以下几个核心模块：
 
-中兴通讯对“整零关系”的预判是：当主机厂希望寻求更开放的合作模式，掌握不同层面零部件的主导权，不只是Tier 1，甚至Tier 2以及Tier N都迎来了更多与主机厂对话的机会。
+1. **初始化模块 (llamaindex_init.py)**：
+   - 负责初始化嵌入模型、LLM、向量存储和索引
+   - 定义了自定义的节点后处理器 `CustomizeNodePostprocessor`
 
-在此趋势下，就车规级通信模组产业而言，能否获得主机厂的订单，已经成为衡量该赛道上林立的玩家竞争实力强弱的标准之一。
+2. **节点处理模块 (nova_node_postprocessing.py)**：
+   - 提供文档到节点的转换和处理功能
+   - 实现了节点合并、分割和元数据处理
 
-2021年3月，中兴通讯设立汽车电子团队，负责汽车电子领域的统一业务规划和经营。盖世汽车了解到，在智能网联方面，中兴通讯的业务已经覆盖智能车控、智能驾驶、智能座舱全场景的车用操作系统，产品广泛应用于中国一汽、广汽、长安汽车等多家车企。
+3. **核心RAG功能模块 (nova_rag_core.py)**：
+   - 提供查询、检索、添加、更新和删除等核心功能
+   - 实现了引用回答生成和Markdown处理
 
-2023年4月，中兴通讯联合联创汽车电子成立创新中心，并联手发布基于中兴通讯车规级4G模组打造的T-BOX产品方案。同年6月，广州汽车集团股份有限公司汽车工程研究院宣布5G V-Box量产开发项目将率先搭载应用中兴通讯车规级5G模组。
+4. **环境工具模块 (env_utils.py)**：
+   - 提供环境变量获取和处理功能
 
-中兴通讯与主机厂的“一拍即合”，正如此前中兴通讯汽车电子MKT副总经理鲁东海所言：“主机厂从上层应用往下走，而中兴则是从底层的操作系统往上走，大家专业的人做专业的事，最终在车端汇合，以最优的成本尽可能实现优秀的性能。”
+这些模块共同构成了一个完整的RAG解决方案，为RAG Service提供了必要的功能支持。
 
-**下游的压力是上游的动力，国货魅力在于“物美”和“价廉”**
+## 架构图
 
-显然，在众多车规级通信模组供应商中，中兴通讯已然走在前列。
+```mermaid
+graph TB
+    classDef ragService fill:#ff7700,stroke:#333,stroke-width:2px,color:white,font-weight:bold
+    classDef coreModule fill:#4CAF50,stroke:#333,stroke-width:1px
+    classDef supportModule fill:#2196F3,stroke:#333,stroke-width:1px
+    classDef externalSystem fill:#9E9E9E,stroke:#333,stroke-width:1px
 
-然而，从“被看到”，到“被选择”，仅仅依靠主机厂“开黑盒”的产业东风是远远不够的。
+    %% 外部系统
+    OpenAI[OpenAI API]:::externalSystem
+    ClickHouse[ClickHouse]:::externalSystem
+    MemoryService[Memory Service]:::externalSystem
+    QdrantDB[Qdrant Vector DB]:::externalSystem
 
-首先，国际商业环境错综复杂且变幻频繁，这极大考验主机厂对供应链安全的掌控能力。其次，自2022年年底以来，由特斯拉在主机厂中间掀起的整车产品“价格战”硝烟延续至今。在此趋势下，主机厂和Tier 1面临降本提效的压力只增不减。对于主机厂和Tier 1而言，其需要的零部件产品无疑将具备两种品质：国产和高性价比。
+    %% RAG Service
+    RAGService[RAG Service<br>rag_service.py]:::ragService
 
-据悉，该公司的通信模组产品已经实现从芯片到模组的核心技术全栈自研。这就意味着，中兴通讯在车规级模组产品方面能有效帮助主机厂和Tier 1降低零部件采购成本。
+    %% llama_index_solution 核心模块
+    LlamaInit[初始化模块<br>llamaindex_init.py]:::coreModule
+    NodeProcessing[节点处理模块<br>nova_node_postprocessing.py]:::coreModule
+    RAGCore[RAG核心功能模块<br>nova_rag_core.py]:::coreModule
+    EnvUtils[环境工具模块<br>env_utils.py]:::supportModule
 
-据盖世汽车了解，经上汽大通核算，中兴通讯全新通信模组的物料成本整整下降了50%。上汽大通将其搭载在最畅销轻客车型新途V80上后，规模化效应将进一步提升其经济性。
+    %% 核心组件
+    VectorStore[Vector Store]:::supportModule
+    IndexManager[Index Manager]:::supportModule
+    NodePostprocessor[Node Postprocessor]:::supportModule
+    CitationEngine[Citation Engine]:::supportModule
+    
+    %% RAG Service 与外部系统的关系
+    RAGService -->|日志存储| ClickHouse
+    RAGService -->|用户记忆查询/存储| MemoryService
+    RAGService -->|文本生成| OpenAI
+    
+    %% RAG Service 与 llama_index_solution 的关系
+    RAGService -->|初始化索引| LlamaInit
+    RAGService -->|文档处理| NodeProcessing
+    RAGService -->|查询/检索/回答生成| RAGCore
+    RAGService -->|环境变量获取| EnvUtils
+    
+    %% llama_index_solution 内部关系
+    LlamaInit -->|创建| VectorStore
+    LlamaInit -->|创建| IndexManager
+    LlamaInit -->|创建| NodePostprocessor
+    LlamaInit -->|连接| QdrantDB
+    
+    NodeProcessing -->|提供节点| IndexManager
+    NodeProcessing -->|使用| EnvUtils
+    
+    RAGCore -->|使用| VectorStore
+    RAGCore -->|使用| IndexManager
+    RAGCore -->|使用| NodePostprocessor
+    RAGCore -->|创建| CitationEngine
+    RAGCore -->|使用| EnvUtils
+    RAGCore -->|使用| NodeProcessing
+    
+    %% 组件与外部系统的关系
+    VectorStore -->|存储向量| QdrantDB
+    IndexManager -->|嵌入生成| OpenAI
+    
+    %% 子组件
+    subgraph LlamaIndexSolution[llama_index_solution 包]
+        LlamaInit
+        NodeProcessing
+        RAGCore
+        EnvUtils
+        VectorStore
+        IndexManager
+        NodePostprocessor
+        CitationEngine
+    end
+```
 
-另外，中兴通讯同样注重用亲民的科技产品普惠大众。中兴通讯方面告诉盖世汽车：该公司以科技普惠、科技向善为准则，希望更多的人都能享受到车联网技术带来的多样化体验。
+这个架构图展示了 `llama_index_solution` 包的内部结构以及与 RAG Service 的交互关系。RAG Service 作为一个独立模块，通过调用 `llama_index_solution` 包中的各种功能来实现检索增强生成。图中使用醒目的橙色标注了 RAG Service，并通过连接线展示了它与各个模块的依赖关系。
 
-对于客户在供应链安全方面的考虑，黄颖恒表示：“中兴通讯愿意拉动我们的上游，为国产化元器件生态伙伴来提供市场，也希望通过大家共同的努力，把车厂供应链安全的压力一层一层消解掉。”
-
-上汽大通选择与中兴通讯合作，也正是出此考虑。谢铭诗表示：“中兴通讯模组产品实现国产自主，不仅提升了供应链安全，还能快速响应市场需求。”
-
-  
-
-
-![](https://p3-sign.toutiaoimg.com/motor-article-img/d415d831837e4491a74a15c9364bd512~noop.image?_iz=58558&from=article.pc_detail&lk3s=953192f4&x-expires=1710771037&x-signature=asSFHONLwJX6YDyt90IH%2BxT%2FtPI%3D)  
-
-
-图源：中兴通讯
-
-强有力的成本控制和供应链保障能力，自然造就了中兴通讯模组产品快速的量产交付能力。
-
-凌惠波告诉盖世汽车：“该项目是上汽大通首次采用国产车载4G通信模组实现量产上车。同时，5G模组也会在今年4月，完成相关验证测试，达到Sop状态。”
-
-另外，对于下游“价格战”压力向上游的传导效应，凌惠波认为：“对于中兴通讯来说，价格战不是压力，而是一种动力。”在他看来，国产自主的产品需要涵盖成本和性能等多个维度优势，才能最终具备与海外品牌竞争的能力。
-
-正如凌惠波所言：“我们的最终目的不只是在国内市场沉淀，还要到海外扬帆出海。”且值得注意的是，对于开辟海外市场，中兴通讯有不同于业内大多数零部件厂商的思考。
-
-**国内站稳，海外起跑：市场国际化是产品国产化的“星辰大海”**
-
-不得不承认的是，在全球一体化的新风口之下，汽车产业出海已不仅仅局限于整车产品，各零部件厂商在汽车产业出海中起到不容忽视的关键作用。
-
-在中兴通讯看来，广阔的全球市场固然是征途中的星辰大海，但在海外市场“起跑”之前，最为紧要的是在国内市场“站稳脚跟”。
-
-盖世汽车也关注到此趋势。此前，盖世汽车曾对比22家国际主流零部件企业2023年三季度财报数据后发觉：并非所有国际零部件厂商均在中国市场取得增长，近年绝大部分外资汽车零部件企业皆一再强调扎根中国。
-
-而这一趋势的背后的真相是：汽车市场需求变幻莫测，供应商的发展速度需要跟上甚至超越市场变化速度。换言之，扎根中国市场，利于提升供应商服务全球市场的能力。
-
-在这一点上，凌惠波也表达了同样的观点。他还提到：“甚至有一些合资品牌，由于在中国有大量的存量客户，也在出于供应链安全稳定和更低成本的考虑，向供应商提出零部件国产化的要求。所以当前我们的策略还是聚焦国内市场。”
-
-根据盖世汽车观察，经过长期的技术投入和市场经验积淀，越来越多国产自主产品力已经具备与国外同类产品一较高下的实力，甚至在很多维度碾压后者。
-
-比如中兴通讯自主研发的车规级通信模组ZM8201，采用全模基带方案，支持五模全频，频段范围230Mhz~2700Mhz，为业界最广，可实现全球范围内2G/3G/4G网络连接，在协议成熟度及网络兼容性上更优，还可深度定制搜网参数，在用户体验和功耗中寻找更优平衡。同时，该通信模组采用了双核CPU方案，实现系统与应用隔离，综合算力比业界其他解决方案高20%。
-
-还需要提及的是，中兴通讯将业务重点放在国内市场，并不意味着其对海外市场无暇顾及。
-
-现如今，中兴通讯的车规级模组产品已先于该公司的具体海外战略之前走出国门，且已完全具备海外市场的适应能力。
-
-凌惠波还告诉盖世汽车，由于上汽大通旗下多个整车产品在海外皆极为畅销，在合作之初，从产品设计层面，中兴通讯的车规级模组产品已经能够满足包括认证、合规、频段兼容性等在内的海外市场需求。
-
-  
-
-
-![](https://p3-sign.toutiaoimg.com/motor-article-img/718277e7522a433da71e8302de5c3614~noop.image?_iz=58558&from=article.pc_detail&lk3s=953192f4&x-expires=1710771037&x-signature=HtELDyE8F9l5URf43%2Fwkr5Sv0%2FE%3D)  
-
-
-图源：中兴通讯
-
-根据中兴通讯方面介绍，中兴通讯ZM8201 4G车规级通信模组有多种存储配置，支持海外eCa11，已经过全球超70个国家运营商的入网认证测试，满足不同客户的需求。
-
-另外，作为资深的国际化厂商，中兴通讯对出海业务有着丰富的经验。从更长时间线来看，早在1996年，中兴通讯便提出“三大转变”战略，逐步走向产品多元化和市场全球化之路。
-
-正如凌惠波所言：“我们不仅在海外有大量的设备和基站，还有丰富的建厂经验，和海外当地的客户渠道经验，我们可以复用当地的现有平台和资源，也可以复制现成的案例和模式，在当地给主机厂和一级供应商支持。”
-
-“在产品层面，在出海经验层面，我们都已经做好了准备，完全具备出海的能力。”凌惠波如是说道。
+这个架构图与之前的时序图相互补充：时序图展示了请求处理的流程和时间顺序，而架构图则展示了系统的静态结构和组件关系。通过这两个图，我们可以全面理解 RAG Service 的工作原理和依赖关系。
